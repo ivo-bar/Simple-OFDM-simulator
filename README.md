@@ -8,7 +8,7 @@ This project is a C++ simulator for an Orthogonal Frequency-Division Multiplexin
 - Configurable parameters such as FFT size, cyclic prefix length, and Signal-to-Noise Ratio (SNR).
 - Simulates a multi-path fading channel.
 - Generates constellation plots for both transmitted and received signals using Gnuplot.
-- Calculates and reports the Bit Error Rate (BER) to evaluate performance.
+- Calculates and reports the Bit Error Rate (BER) to evaluate performance. The BER is not really a bit error rate, but rather a symbol error rate or integer error rate (depending on modulation scheme).
 
 ## Prerequisites
 
@@ -37,7 +37,7 @@ You can run the executable with various command-line options to control the simu
 ### Command-Line Options
 
 - `-m <modulation>`: Set the modulation scheme (QPSK, 16QAM, 64QAM, 256QAM). Default is `16QAM`.
-- `-l <length>`: Set the number of bits to transmit. Default is `2000`.
+- `-l <length>`: Set the number of integers to transmit. Default is `2000`.
 - `-n <points>`: Set the FFT size (must be a power of 2). Default is `256`.
 - `-u <length>`: Set the cyclic prefix length. Default is `8`.
 - `-snr <value>`: Set the Signal-to-Noise Ratio in dB. Default is `30`.
