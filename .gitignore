@@ -1,1 +1,9 @@
 .venv/
+
+ofdm_sym
+
+constellation_comparison.pdf
+
+input_constellation.dat
+
+output_constellation.dat
