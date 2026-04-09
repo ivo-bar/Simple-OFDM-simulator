@@ -858,8 +858,8 @@ public:
             {0.81873075, 0.0},   // First reflection
             {0.67032005, 0.0},   // Second reflection
             {0.54881164, 0.0},   // Third reflection
-            {0.44932896, 0.0},   // Fourth reflection
-            {0.36787944, 0.0}    // Fifth reflection
+            {0.44932896, 0.3},   // Fourth reflection
+            {0.36787944, 0.2}    // Fifth reflection
         };
         
         // Calculate the frequency domain representation
@@ -1115,8 +1115,8 @@ int main(int argc, char* argv[]) {
     // std::cout << "Recovered Signal Power (after normalization): "
     //           << SignalProcessing::calculatePower(rxConstellation) << "\n\n";
     // Print first 10 outputComplex and equalizedSignal values for debugging
-    printComplexVectorLimited(txConstellation, "Input Complex Signal (Transmitted)", 10);
-    printComplexVectorLimited(rxConstellation, "Equalized Signal (Received & Equalized)", 10);
+    // printComplexVectorLimited(txConstellation, "Input Complex Signal (Transmitted)", 10);
+    // printComplexVectorLimited(rxConstellation, "Equalized Signal (Received & Equalized)", 10);
 
 
     // ------------------------------------------------------------------
