@@ -13,6 +13,8 @@
 #include <limits>
 #include <fstream>
 #include <cstring>
+#include <cstdio>
+#include <memory>
 
 // Define M_PI if not already defined
 #ifndef M_PI
@@ -196,18 +198,12 @@ public:
         }
     }
 
-    // Wrapper function to handle normalization
-    // data: The input/output vector of complex numbers
-    // N: The size of the data vector (must be a power of 2)
-    // inverse: true for IFFT, false for FFT
+    // Wrapper function to handle normalization (unitary convention: 1/sqrt(N) on both FFT and IFFT)
     static void fft_normalized(std::vector<std::complex<double>>& data, int N, bool inverse) {
         fft(data, N, inverse);
-
-        // Normalize the result by 1/sqrt(N)
-        double normalization_factor = 1.0 / std::sqrt(N);
-        for (int i = 0; i < N; ++i) {
+        double normalization_factor = 1.0 / std::sqrt(static_cast<double>(N));
+        for (int i = 0; i < N; ++i)
             data[i] *= normalization_factor;
-        }
     }
 
     // Static function to calculate convolution between two vectors
@@ -235,12 +231,11 @@ public:
         //     result = std::vector<std::complex<double>> (result.begin() + start, result.begin() + start + a.size());
 
         if (mode == "same") {
-            // drop anything beyond the size of a
             if (a.size() < b.size()) {
                 throw std::invalid_argument("Size of first vector must be greater than or equal to second vector for 'same' mode.");
             }
             n = a.size();
-            result.resize(n); // Resize to match the size of a
+            result.resize(n); // Take the first a.size() samples (causal output)
         }
 
         return result;
@@ -403,25 +398,62 @@ public:
                                               const std::string& outputFile,
                                               const std::string& scriptName,
                                               const std::string& modulationScheme = "16QAM") {
+        // Read data files to determine actual axis ranges
+        double minReal = std::numeric_limits<double>::max();
+        double maxReal = std::numeric_limits<double>::lowest();
+        double minImag = std::numeric_limits<double>::max();
+        double maxImag = std::numeric_limits<double>::lowest();
+        
+        // Function to read and find min/max from a constellation file
+        auto updateRanges = [&](const std::string& filename) {
+            std::ifstream file(filename);
+            if (!file.is_open()) {
+                std::cerr << "Warning: Could not open file " << filename << " for reading axis ranges\n";
+                return;
+            }
+            std::string line;
+            while (std::getline(file, line)) {
+                if (line.empty() || line[0] == '#') continue; // Skip comments and empty lines
+                double real, imag;
+                if (std::sscanf(line.c_str(), "%lf %lf", &real, &imag) == 2) {
+                    minReal = std::min(minReal, real);
+                    maxReal = std::max(maxReal, real);
+                    minImag = std::min(minImag, imag);
+                    maxImag = std::max(maxImag, imag);
+                }
+            }
+        };
+        
+        updateRanges(inputFile);
+        updateRanges(outputFile);
+        
+        // Check if we have valid data
+        if (minReal == std::numeric_limits<double>::max()) {
+            std::cerr << "Warning: No valid constellation data found. Using default ranges.\n";
+            minReal = -2; maxReal = 2;
+            minImag = -2; maxImag = 2;
+        }
+        
+        // Calculate symmetric range around center
+        double centerReal = (minReal + maxReal) / 2.0;
+        double centerImag = (minImag + maxImag) / 2.0;
+        double radius = std::max(std::abs(maxReal - centerReal), std::abs(maxImag - centerImag));
+        
+        // Add 20% padding
+        radius *= 1.2;
+        
+        double axisMin = std::min(centerReal, centerImag) - radius;
+        double axisMax = std::max(centerReal, centerImag) + radius;
+        
         std::ofstream script(scriptName);
         if (!script.is_open()) {
             std::cerr << "Error: Could not create gnuplot script " << scriptName << std::endl;
             return;
         }
         
-        // Determine axis range based on modulation scheme
-        int axisRange = 5; // Default for 16QAM
-        if (modulationScheme == "QPSK") {
-            axisRange = 2;  // QPSK: ±1
-        } else if (modulationScheme == "16QAM") {
-            axisRange = 5;  // 16QAM: ±3, plus margin
-        } else if (modulationScheme == "64QAM") {
-            axisRange = 9; // 64QAM: ±7, plus margin
-        } else if (modulationScheme == "256QAM") {
-            axisRange = 19;  // 256QAM: ±15, plus margin
-        }
-        
+        script << std::fixed << std::setprecision(6);
         script << "# Gnuplot script for constellation plotting\n";
+        script << "# Axis range: [" << axisMin << " : " << axisMax << "]\n";
         script << "set terminal pdf enhanced color size 12,6\n";
         script << "set output 'constellation_comparison.pdf'\n";
         script << "set multiplot layout 1,2\n\n";
@@ -432,8 +464,8 @@ public:
         script << "set ylabel 'Imaginary Part'\n";
         script << "set grid\n";
         script << "set size square\n";
-        script << "set xrange [-" << axisRange << ":" << axisRange << "]\n";
-        script << "set yrange [-" << axisRange << ":" << axisRange << "]\n";
+        script << "set xrange [" << axisMin << ":" << axisMax << "]\n";
+        script << "set yrange [" << axisMin << ":" << axisMax << "]\n";
         script << "plot '" << inputFile << "' using 1:2 with points pointtype 7 pointsize 1.2 linecolor rgb 'dark-blue' title 'Input Symbols'\n\n";
         
         script << "# Output constellation\n";
@@ -442,14 +474,15 @@ public:
         script << "set ylabel 'Imaginary Part'\n";
         script << "set grid\n";
         script << "set size square\n";
-        script << "set xrange [-" << axisRange << ":" << axisRange << "]\n";
-        script << "set yrange [-" << axisRange << ":" << axisRange << "]\n";
+        script << "set xrange [" << axisMin << ":" << axisMax << "]\n";
+        script << "set yrange [" << axisMin << ":" << axisMax << "]\n";
         script << "plot '" << outputFile << "' using 1:2 with points pointtype 7 pointsize 1.2 linecolor rgb 'dark-blue' title 'Received Symbols'\n\n";
         
         script << "unset multiplot\n";
         script.close();
         
         std::cout << "Gnuplot script created: " << scriptName << std::endl;
+        std::cout << "Axis range: [" << axisMin << " : " << axisMax << "]\n";
         std::cout << "To generate the plot, run: gnuplot " << scriptName << std::endl;
     }
 };
@@ -555,10 +588,8 @@ public:
             output.insert(output.end(), equalizedSymbol.begin(), equalizedSymbol.end());
         }
 
-        // Truncate to original signal length if specified
-        if (originalLength > 0 && output.size() > originalLength) {
+        if (originalLength > 0 && output.size() > originalLength)
             output.resize(originalLength);
-        }
 
         return output;
     }
@@ -587,30 +618,27 @@ private:
     // Modulation scheme and its corresponding maximum constellation points
     std::string modulationScheme;
     int Nmax;
+    double normFactor;  // 1/sqrt(average symbol energy)
     std::vector<std::complex<double>> mappingTable;
 public:
     // Modulator constructor initialized by the modulation scheme string
-    Modulator(const std::string& modulationScheme) : modulationScheme(modulationScheme), Nmax(0) {
+    Modulator(const std::string& modulationScheme) : modulationScheme(modulationScheme), Nmax(0), normFactor(1.0) {
         auto it = MODULATION_TABLE.find(modulationScheme);
         if (it != MODULATION_TABLE.end()) {
             Nmax = it->second; // Set the number of constellation points based on the modulation scheme
 
             // Also, select the appropriate mapping table based on the modulation order
             if (modulationScheme == "QPSK") {
-               
-                // Use QPSK_MAPPING
+                normFactor = 1.0 / std::sqrt(2.0);
                 mappingTable = QPSK_MAPPING;
             } else if (modulationScheme == "16QAM") {
-               
-                // Use QAM16_MAPPING
+                normFactor = 1.0 / std::sqrt(10.0);
                 mappingTable = QAM16_MAPPING;
             } else if (modulationScheme == "64QAM") {
-             
-                // Use QAM64_MAPPING
+                normFactor = 1.0 / std::sqrt(42.0);
                 mappingTable = QAM64_MAPPING;
             } else if (modulationScheme == "256QAM") {
-               
-                // Use 256QAM_MAPPING
+                normFactor = 1.0 / std::sqrt(170.0);
                 mappingTable = QAM256_MAPPING;
             }
             std::cout << "Modulation set with: " << Nmax << " constellation points" << std::endl;
@@ -618,6 +646,7 @@ public:
         else {
             std::cerr << "Unsupported modulation scheme: " << modulationScheme << ", using default value (QPSK)" << std::endl;
             Nmax = MODULATION_TABLE.at("QPSK"); // Default to QPSK if not found
+            normFactor = 1.0 / std::sqrt(2.0);
         }
     }
 
@@ -633,11 +662,9 @@ public:
     // Function to modulate a vector of bits into complex symbols
     std::vector<std::complex<double>> modulateSignal(const std::vector<int>& bits) {
         std::vector<std::complex<double>> modulatedSignal;
-        modulatedSignal.reserve(bits.size()); // Reserve space
-        // Map bits to QPSK symbols 
-        for (size_t i = 0; i < bits.size(); ++i) {
-            modulatedSignal.push_back(mappingTable[bits[i]]);
-        }
+        modulatedSignal.reserve(bits.size());
+        for (size_t i = 0; i < bits.size(); ++i)
+            modulatedSignal.push_back(mappingTable[bits[i]] * normFactor);
         return modulatedSignal;
     }
 
@@ -647,45 +674,156 @@ public:
         demodulatedBits.reserve(symbols.size());
         
         for (const auto& symbol : symbols) {
+            // Scale received symbol back to unnormalized space for table lookup
+            std::complex<double> scaled = symbol / normFactor;
             int closestIndex = -1;
             double minDistance = std::numeric_limits<double>::max();
             
             // Find the closest constellation point
             for (size_t i = 0; i < mappingTable.size(); ++i) {
-                double distance = std::abs(symbol - mappingTable[i]);
+                double distance = std::abs(scaled - mappingTable[i]);
                 if (distance < minDistance) {
                     minDistance = distance;
                     closestIndex = static_cast<int>(i);
                 }
             }
             
-            // Only add if within tolerance, otherwise add -1 to indicate error
-            if (minDistance <= tolerance && closestIndex != -1) {
+            // Scaled tolerance to match unnormalized space
+            double scaledTolerance = tolerance / normFactor;
+            if (minDistance <= scaledTolerance && closestIndex != -1)
                 demodulatedBits.push_back(closestIndex);
-            } else {
-                demodulatedBits.push_back(-1); // Error indicator
-            }
+            else
+                demodulatedBits.push_back(-1);
         }
         return demodulatedBits;
     }
 };
 
+// ====================================================================
+// BitStream: converts between text, raw bits, and symbol indices
+// ====================================================================
+class BitStream {
+public:
+    // Read a text file and return its contents as a byte vector
+    static std::vector<uint8_t> readTextFile(const std::string& filename) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file.is_open())
+            throw std::runtime_error("Cannot open input file: " + filename);
+        return std::vector<uint8_t>(
+            std::istreambuf_iterator<char>(file),
+            std::istreambuf_iterator<char>());
+    }
+
+    // Write a byte vector back to a text file
+    static void writeTextFile(const std::string& filename, const std::vector<uint8_t>& bytes) {
+        std::ofstream file(filename, std::ios::binary);
+        if (!file.is_open())
+            throw std::runtime_error("Cannot open output file: " + filename);
+        file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    }
+
+    // Convert bytes → flat bit vector (MSB first per byte)
+    static std::vector<int> bytesToBits(const std::vector<uint8_t>& bytes) {
+        std::vector<int> bits;
+        bits.reserve(bytes.size() * 8);
+        for (uint8_t b : bytes)
+            for (int i = 7; i >= 0; --i)
+                bits.push_back((b >> i) & 1);
+        return bits;
+    }
+
+    // Convert flat bit vector back to bytes (MSB first per byte)
+    // Pads the last byte with zeros if bits.size() is not a multiple of 8
+    static std::vector<uint8_t> bitsToBytes(const std::vector<int>& bits) {
+        std::vector<uint8_t> bytes;
+        bytes.reserve((bits.size() + 7) / 8);
+        for (size_t i = 0; i < bits.size(); i += 8) {
+            uint8_t byte = 0;
+            for (int b = 0; b < 8 && (i + b) < bits.size(); ++b)
+                byte |= (bits[i + b] & 1) << (7 - b);
+            bytes.push_back(byte);
+        }
+        return bytes;
+    }
+
+    // Pack a flat bit vector into symbol indices for a given modulation order M
+    // bitsPerSymbol = log2(M); pads with zeros if needed
+    static std::vector<int> bitsToSymbols(const std::vector<int>& bits, int bitsPerSymbol) {
+        std::vector<int> symbols;
+        symbols.reserve((bits.size() + bitsPerSymbol - 1) / bitsPerSymbol);
+        for (size_t i = 0; i < bits.size(); i += bitsPerSymbol) {
+            int sym = 0;
+            for (int b = 0; b < bitsPerSymbol; ++b) {
+                sym <<= 1;
+                if ((i + b) < bits.size())
+                    sym |= bits[i + b] & 1;
+            }
+            symbols.push_back(sym);
+        }
+        return symbols;
+    }
+
+    // Unpack symbol indices back to a flat bit vector
+    static std::vector<int> symbolsToBits(const std::vector<int>& symbols, int bitsPerSymbol) {
+        std::vector<int> bits;
+        bits.reserve(symbols.size() * bitsPerSymbol);
+        for (int sym : symbols) {
+            // -1 means demodulation failure — emit bitsPerSymbol error bits (arbitrary, use 0)
+            if (sym < 0) {
+                for (int b = 0; b < bitsPerSymbol; ++b) bits.push_back(0);
+            } else {
+                for (int b = bitsPerSymbol - 1; b >= 0; --b)
+                    bits.push_back((sym >> b) & 1);
+            }
+        }
+        return bits;
+    }
+
+    // Compute bit error rate between two flat bit vectors
+    static double bitErrorRate(const std::vector<int>& tx, const std::vector<int>& rx) {
+        size_t len = std::min(tx.size(), rx.size());
+        int errors = 0;
+        for (size_t i = 0; i < len; ++i)
+            if (tx[i] != rx[i]) ++errors;
+        return static_cast<double>(errors) / len;
+    }
+};
+
+// ====================================================================
 // Generate a signal class to handle signal generation
 class Signal {
 private:
     std::vector<int> intSignalData;
+    std::vector<int> sourceBits;   // flat bit stream when loaded from file
     int NFFTSize; // Size of the FFT
+    bool fromFile = false;
     std::vector<std::complex<double>> cmplxSignalData; // Store complex signal data
     std::vector<std::complex<double>> channelImpulseResponse; // Channel impulse response
     std::vector<std::complex<double>> channelFrequencyResponse; // Channel frequency response (Hn)
 
 public:
+    // Constructor: load symbol indices from a text file
+    // The file is read as raw bytes, converted to bits, then packed into
+    // symbol indices for the given modulation order.
+    Signal(const std::string& filename, int modulationOrder, int nfftSize = 256)
+        : NFFTSize(nfftSize), fromFile(true)
+    {
+        int bitsPerSym = static_cast<int>(std::round(std::log2(modulationOrder)));
+        auto bytes  = BitStream::readTextFile(filename);
+        sourceBits  = BitStream::bytesToBits(bytes);
+        intSignalData = BitStream::bitsToSymbols(sourceBits, bitsPerSym);
+        initializeChannel();
+        std::cout << "Loaded " << bytes.size() << " bytes ("
+                  << sourceBits.size() << " bits → "
+                  << intSignalData.size() << " symbols) from " << filename << "\n";
+    }
+
     // Constructor to initialize the signal with length, max value for random generation and fft size for 
     // frequency domain of the channel impulse response
     // Default modulation order is 4 (QPSK)
     // Default FFT size is 256
     // Default channel impulse response is initialized with 3 paths
-    Signal(size_t length, int maxValue = 4, int nfftSize = 256) : NFFTSize(nfftSize) {
+    Signal(size_t length, int maxValue = 4, int nfftSize = 256) : NFFTSize(nfftSize), fromFile(false) {
 
         // generate a vecotr with 8 integeers randomly generated in the range from 0 to 3
         // make the random numbers variable with every run
@@ -735,17 +873,6 @@ public:
     }
 
     // Function to calculate the frequency domain representation of the channel
-    // void calculateChannelFrequencyResponse() {
-    //     // Copy channel impulse response and pad with zeros if necessary
-    //     channelFrequencyResponse = channelImpulseResponse;
-    //     if (channelFrequencyResponse.size() < static_cast<size_t>(NFFTSize)) {
-    //         channelFrequencyResponse.resize(NFFTSize, {0.0, 0.0});
-    //     }
-        
-    //     // Perform FFT to get frequency domain representation
-    //     SignalProcessing::fft_normalized(channelFrequencyResponse, static_cast<int>(NFFTSize), false);
-    // }
-
     void calculateChannelFrequencyResponse() {
         // Copy channel impulse response and pad with zeros if necessary
         channelFrequencyResponse = channelImpulseResponse;
@@ -760,6 +887,10 @@ public:
     const std::vector<int>& getIntSignal() const {
         return intSignalData;
     }
+
+    // Flat bit stream (only populated when loaded from file)
+    const std::vector<int>& getSourceBits() const { return sourceBits; }
+    bool isFromFile() const { return fromFile; }
 
     // Function to get the channel impulse response
     const std::vector<std::complex<double>>& getChannelImpulseResponse() const {
@@ -790,18 +921,25 @@ struct ProgramOptions {
     int nfft = 256;
     int cyclicPrefix = 8;
     double snr = 30.0; // Default SNR in dB
+    std::string inputFile  = "";   // if set, read text from file instead of random data
+    std::string outputFile = "";   // if set, write recovered text to file
 };
 
 void printUsage(const char* programName) {
     std::cout << "Usage: " << programName << " [options]\n";
     std::cout << "Options:\n";
-    std::cout << "  -m <modulation>    Modulation scheme (QPSK, 16QAM, 64QAM, 256QAM) [default: 16QAM]\n";
-    std::cout << "  -l <length>        Number of bits to generate [default: 2000]\n";
-    std::cout << "  -n|--nfft <points>  FFT size (must be power of 2) [default: 256]\n";
-    std::cout << "  -u <length>        Cyclic prefix length in samples [default: 8]\n";
-    std::cout << "  -h|--help          Show this help message\n";
-    std::cout << "  -snr <value>       Signal to Noise Ratio in dB [default: 30 dB]\n";
-    std::cout << "\nExample: " << programName << " -m 64QAM -l 10000 -n 512 -u 16\n";
+    std::cout << "  -m <modulation>     Modulation scheme (QPSK, 16QAM, 64QAM, 256QAM) [default: 16QAM]\n";
+    std::cout << "  -l <length>         Number of symbols to generate (random mode) [default: 2000]\n";
+    std::cout << "  -n|-nfft <points>   FFT size (must be power of 2) [default: 256]\n";
+    std::cout << "  -u <length>         Cyclic prefix length in samples [default: 8]\n";
+    std::cout << "  -snr <value>        Signal-to-Noise Ratio in dB [default: 30]\n";
+    std::cout << "  -i <file>           Input text file (enables text mode)\n";
+    std::cout << "  -o <file>           Output text file for recovered text (text mode only)\n";
+    std::cout << "  -h|--help           Show this help message\n";
+    std::cout << "\nExamples:\n";
+    std::cout << "  " << programName << " -m 64QAM -l 10000 -n 512 -u 16\n";
+    std::cout << "  " << programName << " -m 16QAM -i input.txt -o output.txt -snr 20 -u 8\n";
+    std::cout << "  " << programName << " -m 16QAM -i input.txt -o output_no_cp.txt -snr 20 -u 0\n";
 }
 
 bool isPowerOfTwo(int n) {
@@ -875,6 +1013,22 @@ ProgramOptions parseArguments(int argc, char* argv[]) {
             printUsage(argv[0]);
             exit(0);
         }
+        else if (strcmp(argv[i], "-i") == 0) {
+            if (i + 1 < argc) {
+                options.inputFile = argv[++i];
+            } else {
+                std::cerr << "Error: -i requires a filename\n";
+                exit(1);
+            }
+        }
+        else if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 < argc) {
+                options.outputFile = argv[++i];
+            } else {
+                std::cerr << "Error: -o requires a filename\n";
+                exit(1);
+            }
+        }
         else {
             std::cerr << "Error: Unknown option '" << argv[i] << "'\n";
             printUsage(argv[0]);
@@ -890,114 +1044,134 @@ ProgramOptions parseArguments(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
     // Parse command line arguments
     ProgramOptions options = parseArguments(argc, argv);
-    
+
+    bool textMode = !options.inputFile.empty();
+
     std::cout << "OFDM Simulator Configuration:\n";
-    std::cout << "  Modulation: " << options.modulation << "\n";
-    std::cout << "  Bits: " << options.length << "\n";
-    std::cout << "  FFT Size: " << options.nfft << "\n";
-    std::cout << "  Cyclic Prefix: " << options.cyclicPrefix << " samples\n";
-    std::cout << "  SNR (dB) value: " << options.snr << "\n\n";
-  
+    std::cout << "  Modulation:     " << options.modulation << "\n";
+    std::cout << "  FFT Size:       " << options.nfft << "\n";
+    std::cout << "  Cyclic Prefix:  " << options.cyclicPrefix << " samples\n";
+    std::cout << "  SNR:            " << options.snr << " dB\n";
+    std::cout << "  Mode:           " << (textMode ? "text file" : "random") << "\n";
+    if (textMode) {
+        std::cout << "  Input file:     " << options.inputFile << "\n";
+        std::cout << "  Output file:    " << (options.outputFile.empty() ? "(none)" : options.outputFile) << "\n";
+    }
+    std::cout << "\n";
 
-    // Create an instance of the Modulator class with specified modulation
+    // ------------------------------------------------------------------
+    // Create modulator
     Modulator modulator(options.modulation);
+    int modulationOrder  = modulator.getModulationOrder();
+    int bitsPerSymbol    = static_cast<int>(std::round(std::log2(modulationOrder)));
 
-    // Get the modulation order
-    int modulationOrder = modulator.getModulationOrder();
-    std::cout << " Number of constellation points: " << modulationOrder << " for " << modulator.getModulationScheme() << std::endl;
+    // ------------------------------------------------------------------
+    // Build signal source
+    std::unique_ptr<Signal> sigPtr;
+    if (textMode) {
+        sigPtr = std::make_unique<Signal>(options.inputFile, modulationOrder, options.nfft);
+    } else {
+        sigPtr = std::make_unique<Signal>(options.length, modulationOrder, options.nfft);
+    }
+    Signal& signal = *sigPtr;
 
-    // Create an instance of the Signal class with specified number of bits
-    Signal signal(options.length, modulationOrder, options.nfft);
-    // signal.printSignal(); // Print the generated random bits
-    // signal.printChannelInfo(); // Print channel information
+    std::vector<int> txSymbols = signal.getIntSignal();
 
-    // Get the integer signal data
-    std::vector<int> randomNumbers = signal.getIntSignal();
+    // Modulate symbols → complex constellation points
+    std::vector<std::complex<double>> txConstellation = modulator.modulateSignal(txSymbols);
+    double inputSignalPower = SignalProcessing::calculatePower(txConstellation);
+    std::cout << "Input Signal Power: " << inputSignalPower << "\n";
 
-    // generate an output complex vector by reserving space for 8 elements
-    std::vector<std::complex<double>> outputComplex = modulator.modulateSignal(randomNumbers);
+    // ------------------------------------------------------------------
+    // OFDM modulation (IFFT + CP insertion)
+    TxRxOFDMS ofdmProcessor(options.nfft, options.cyclicPrefix);
+    std::vector<std::complex<double>> txOfdm = ofdmProcessor.generateOfdmSignal(txConstellation);
 
-    // Calculate the power of the input signal
-    double inputSignalPower = SignalProcessing::calculatePower(outputComplex);
-    std::cout << "Input Signal Power: " << inputSignalPower << std::endl;
+    // ------------------------------------------------------------------
+    // Channel: convolution with impulse response
+    std::vector<std::complex<double>> channelIR  = signal.getChannelImpulseResponse();
+    std::vector<std::complex<double>> channelFR  = signal.getChannelFrequencyResponse();
 
+    std::vector<std::complex<double>> rxOfdm =
+        SignalProcessing::calculateConvolution(txOfdm, channelIR, "same");
 
-    // Print the mapped complex numbers
-    // printComplexVector(outputComplex, "Mapped Complex Numbers");
+    double rxPower = SignalProcessing::calculatePower(rxOfdm);
+    std::cout << "Received Signal Power (after channel): " << rxPower << "\n";
 
-    // Create an OFDMSymbol instance with specified FFT size and cyclic prefix length
-    // Create an instance of TxRxOFDMS with the specified parameters
-    TxRxOFDMS ofdmSignal(options.nfft, options.cyclicPrefix);
+    // ------------------------------------------------------------------
+    // AWGN noise
+    double noisePower = SignalProcessing::calculateNoisePowerFromSNR(rxPower, options.snr);
+    std::cout << "Noise Power: " << noisePower
+              << "  (SNR = " << options.snr << " dB)\n";
+    SignalProcessing::addNoise(rxOfdm, noisePower);
 
-    // Perform FFT on the output complex vector
-    std::vector<std::complex<double>> fftOutput = ofdmSignal.generateOfdmSignal(outputComplex);
-    // printComplexVector(fftOutput, "FFT Output with Cyclic Prefix");
+    // ------------------------------------------------------------------
+    // OFDM demodulation: CP removal + FFT + single-tap equalization
+    std::vector<std::complex<double>> rxConstellation =
+        ofdmProcessor.invertOfdm(rxOfdm, channelFR, txConstellation.size());
 
-    // Get channel impulse response and frequency response from signal
-    std::vector<std::complex<double>> channelImpulseResponse = signal.getChannelImpulseResponse();
-    std::vector<std::complex<double>> channelFrequencyResponse = signal.getChannelFrequencyResponse();
-
-    // Perform convolution with the channel impulse response
-    std::vector<std::complex<double>> convolvedOutput = SignalProcessing::calculateConvolution(fftOutput, channelImpulseResponse, "same");
-    // printComplexVector(convolvedOutput, "Convolved Output");
-
-    // Print the power of the convolved output
-    double convolvedOutputPower = SignalProcessing::calculatePower(convolvedOutput);
-    std::cout << "Convolved Output Power: " << convolvedOutputPower << std::endl;
-    
-    // Print the size of the convolved output
-    std::cout << "Size of Convolved Output: " << convolvedOutput.size() << std::endl;   
-
-    // determine the noise power based on the desired SNR
-    double noisePower = SignalProcessing::calculateNoisePowerFromSNR(convolvedOutputPower, options.snr);
-    std::cout << "Adding noise with power: " << noisePower << " for SNR: " << options.snr << " dB" << std::endl;
-
-    // Add noise here:
-    SignalProcessing::addNoise(convolvedOutput, noisePower); // Adjust noise power as needed
-
-    // Perform IFFT on the convolved output and apply equalization inside invertOfdm
-    // Note: invertOfdm removes cyclic prefix, performs FFT, and applies equalization
-    // Pass original signal length to truncate padded zeros
-    std::vector<std::complex<double>> equalizedSignal = ofdmSignal.invertOfdm(convolvedOutput, channelFrequencyResponse, outputComplex.size());
-
-    // Calculate the power of the recovered signal and normalize the signal so that its power is equal to the input signal power
-    double recoveredSignalPower = SignalProcessing::calculatePower(equalizedSignal);
-    std::cout << "Recovered Signal Power: " << recoveredSignalPower << std::endl;
-
-    // Normalize the recovered signal to match the input signal power
-    // SignalProcessing::normalizePower(equalizedSignal, inputSignalPower);
-
+    // Normalize recovered signal power to match transmit power
+    // SignalProcessing::normalizePower(rxConstellation, inputSignalPower);
+    // std::cout << "Recovered Signal Power (after normalization): "
+    //           << SignalProcessing::calculatePower(rxConstellation) << "\n\n";
     // Print first 10 outputComplex and equalizedSignal values for debugging
-    // printComplexVectorLimited(outputComplex, "Input Complex Signal (Transmitted)", 10);
-    // printComplexVectorLimited(equalizedSignal, "Equalized Signal (Received & Equalized)", 10);
+    printComplexVectorLimited(txConstellation, "Input Complex Signal (Transmitted)", 10);
+    printComplexVectorLimited(rxConstellation, "Equalized Signal (Received & Equalized)", 10);
 
-    // Export constellation points for gnuplot visualization
-    SignalProcessing::exportConstellationToFile(outputComplex, "input_constellation.dat", "Input Constellation (Transmitted)");
-    SignalProcessing::exportConstellationToFile(equalizedSignal, "output_constellation.dat", "Output Constellation (Received & Equalized)");
-    
-    // Create gnuplot script for constellation comparison
-    SignalProcessing::createConstellationPlotScript("input_constellation.dat", "output_constellation.dat", "plot_constellation.plt", modulator.getModulationScheme());
 
-    // Demodulate the recovered signal using the modulator's demodulation method
-    std::vector<int> recoveredBits = modulator.demodulateSignal(equalizedSignal, 5.0); // Use higher tolerance due to channel effects
-    
-    // Print the recovered bits
-    // printIntVector(recoveredBits, "Recovered Bits");
-    
-    // Compare with original signal
-    std::vector<int> originalBits = signal.getIntSignal();
+    // ------------------------------------------------------------------
+    // Export constellation diagrams for gnuplot
+    SignalProcessing::exportConstellationToFile(txConstellation,
+        "input_constellation.dat", "Input Constellation (Transmitted)");
+    SignalProcessing::exportConstellationToFile(rxConstellation,
+        "output_constellation.dat", "Output Constellation (Received & Equalized)");
+    SignalProcessing::createConstellationPlotScript(
+        "input_constellation.dat", "output_constellation.dat",
+        "plot_constellation.plt", modulator.getModulationScheme());
 
-    
-    // printIntVector(originalBits, "Original Bits");
-    
-    // Calculate bit error rate using SignalProcessing utility
-    double ber = SignalProcessing::calculateBER(originalBits, recoveredBits);
-    auto errorCount = ber* originalBits.size();
-    int errors = static_cast<int>(errorCount);
-    int validBits = static_cast<int>(originalBits.size());
-    
-    // Print the Bit Error Rate (BER)
-    std::cout << "Bit Error Rate (BER): " << ber << " (" << errors << " errors out of " << validBits << " transmitted bits)" << std::endl;
+    // ------------------------------------------------------------------
+    // Demodulate back to symbol indices
+    std::vector<int> rxSymbols = modulator.demodulateSignal(rxConstellation, 5.0);
+
+    // ------------------------------------------------------------------
+    // BER and text output
+    if (textMode) {
+        // Unpack received symbols → bits → bytes → text
+        std::vector<int> txBits = signal.getSourceBits();
+        std::vector<int> rxBits = BitStream::symbolsToBits(rxSymbols, bitsPerSymbol);
+
+        // Trim rxBits to the same length as txBits (drop padding)
+        if (rxBits.size() > txBits.size())
+            rxBits.resize(txBits.size());
+
+        double ber = BitStream::bitErrorRate(txBits, rxBits);
+        int    errors   = static_cast<int>(ber * txBits.size());
+        std::cout << "Bit Error Rate (BER): " << ber
+                  << "  (" << errors << " errors / " << txBits.size() << " bits)\n";
+
+        // Reconstruct output bytes
+        std::vector<uint8_t> rxBytes = BitStream::bitsToBytes(rxBits);
+
+        if (!options.outputFile.empty()) {
+            BitStream::writeTextFile(options.outputFile, rxBytes);
+            std::cout << "Recovered text written to: " << options.outputFile << "\n";
+            std::cout << "(Diff with original to see corruption introduced by channel + noise)\n";
+        } else {
+            // Print a short preview to stdout
+            std::cout << "\n--- Recovered text preview (first 200 chars) ---\n";
+            size_t preview = std::min(rxBytes.size(), size_t(200));
+            for (size_t i = 0; i < preview; ++i)
+                std::cout << static_cast<char>(rxBytes[i]);
+            std::cout << "\n--- end preview ---\n";
+        }
+    } else {
+        // Random mode: symbol-level BER as before
+        double ber = SignalProcessing::calculateBER(txSymbols, rxSymbols);
+        int errors    = static_cast<int>(ber * txSymbols.size());
+        std::cout << "Symbol Error Rate: " << ber
+                  << "  (" << errors << " errors / "
+                  << static_cast<int>(txSymbols.size()) << " symbols)\n";
+    }
 
     return 0;
 }
