@@ -57,3 +57,13 @@ The simulation generates the following files:
 - `output_constellation.dat`: The constellation points of the received signal after equalization.
 - `plot_constellation.plt`: A Gnuplot script to generate the plots.
 - `constellation_comparison.pdf`: A PDF file containing the side-by-side constellation plots.
+
+## Source Files
+
+- [`ofdm_sym.cpp`](ofdm_sym.cpp): The original OFDM simulator implementation.
+- [`ofdm_sym_claude_update.cpp`](ofdm_sym_claude_update.cpp): An updated version with enhanced features including:
+  - Text file input/output mode for transmitting and recovering arbitrary text data
+  - Support for 256QAM modulation scheme
+  - Improved bit stream handling and error detection
+  - Better signal power normalization and SNR management
+  - This version is actively maintained and recommended for use.
